@@ -19,7 +19,6 @@ describe('loadConfig', () => {
     delete process.env.KIMI_SERVER_URL;
     delete process.env.KIMI_BEARER_TOKEN;
     delete process.env.KIMI_TOKEN_FILE;
-    delete process.env.KIMI_WS_AUTH_MODE;
     // Most tests do not care about the kimi token; provide a default so the
     // bearer-token requirement does not interfere with unrelated assertions.
     process.env.KIMI_BEARER_TOKEN = 'default-kimi-token';
@@ -163,33 +162,17 @@ describe('loadConfig', () => {
     expect(config.kimiWsUrl).toBe('wss://example.com');
   });
 
-  it('defaults WebSocket auth mode to subprotocol', () => {
+  it('defaults the token file to ~/.kimi-code/server.token', () => {
     process.env.TELEGRAM_BOT_TOKEN = 'test-token';
     process.env.KIMI_BEARER_TOKEN = 'kimi-token';
     const config = loadConfig();
-    expect(config.kimiWsAuthMode).toBe('subprotocol');
+    expect(config.kimiTokenFile).toBe('~/.kimi-code/server.token');
   });
 
-  it('loads WebSocket auth mode from environment', () => {
+  it('mentions the default server.token path when the token file is missing', () => {
     process.env.TELEGRAM_BOT_TOKEN = 'test-token';
-    process.env.KIMI_BEARER_TOKEN = 'kimi-token';
-    process.env.KIMI_WS_AUTH_MODE = 'query';
-    const config = loadConfig();
-    expect(config.kimiWsAuthMode).toBe('query');
-  });
-
-  it('throws for invalid WebSocket auth mode', () => {
-    process.env.TELEGRAM_BOT_TOKEN = 'test-token';
-    process.env.KIMI_BEARER_TOKEN = 'kimi-token';
-    process.env.KIMI_WS_AUTH_MODE = 'invalid';
-    expect(() => loadConfig()).toThrow(/KIMI_WS_AUTH_MODE/);
-  });
-
-  it('throws for empty WebSocket auth mode string', () => {
-    process.env.TELEGRAM_BOT_TOKEN = 'test-token';
-    process.env.KIMI_BEARER_TOKEN = 'kimi-token';
-    process.env.KIMI_WS_AUTH_MODE = '';
-    expect(() => loadConfig()).toThrow(/KIMI_WS_AUTH_MODE/);
+    delete process.env.KIMI_BEARER_TOKEN;
+    expect(() => loadConfig()).toThrow(/server\.token/);
   });
 
   it('throws when bearer token env is whitespace only', () => {

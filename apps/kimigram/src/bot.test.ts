@@ -2,13 +2,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Bot } from 'grammy';
+import { Bot, type Context } from 'grammy';
 import { openStore, type Store } from './store.js';
 import { createPairingService, type PairingService } from './pairing.js';
 import {
   createStartHandler,
   createBot,
   createMessageHandler,
+  createApprovalCallbackHandler,
   createUpdateIdDedupMiddleware,
 } from './bot.js';
 import type { Config } from './config.js';
@@ -32,6 +33,29 @@ const TEST_BOT_INFO = {
   supports_inline_queries: false,
 } as const;
 
+function createTestConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    telegramBotToken: 'test-token',
+    databasePath: ':memory:',
+    pairingCodeTtlMinutes: 10,
+    logLevel: 'info',
+    kimiServerUrl: 'http://localhost:58627',
+    kimiBearerToken: 'kimi-token',
+    kimiTokenFile: '~/.kimi-code/server.token',
+    ...overrides,
+  };
+}
+
+function createMockKimiClient(
+  overrides: Partial<KimiClient> = {}
+): KimiClient {
+  return {
+    submitPrompt: vi.fn().mockResolvedValue({ id: 'msg-1' }),
+    resolveApproval: vi.fn().mockResolvedValue({ kind: 'resolved' }),
+    ...overrides,
+  };
+}
+
 async function dispatchStart(
   pairingService: PairingService,
   store: Store,
@@ -40,11 +64,12 @@ async function dispatchStart(
     chatType?: 'private' | 'group';
     chatId?: number;
     userId?: number;
+    onPaired?: (sessionId: string) => void;
   } = {}
 ): Promise<{ replies: string[] }> {
   const bot = new Bot('dummy-token');
   bot.botInfo = { ...TEST_BOT_INFO };
-  bot.command('start', createStartHandler(pairingService, store));
+  bot.command('start', createStartHandler(pairingService, store, overrides.onPaired));
 
   const replies: string[] = [];
   bot.api.config.use((prev, method, payload) => {
@@ -76,15 +101,6 @@ async function dispatchStart(
   return { replies };
 }
 
-function createMockKimiClient(
-  overrides: Partial<KimiClient> = {}
-): KimiClient {
-  return {
-    submitPrompt: vi.fn().mockResolvedValue({ id: 'prompt-1' }),
-    ...overrides,
-  };
-}
-
 async function dispatchMessage(
   store: Store,
   kimiClient: KimiClient,
@@ -95,7 +111,6 @@ async function dispatchMessage(
     userId?: number;
     noChat?: boolean;
     messageId?: number;
-    replyToMessageId?: number;
     logger?: Logger;
   } = {}
 ): Promise<{ replies: string[] }> {
@@ -115,14 +130,6 @@ async function dispatchMessage(
     return prev(method, payload);
   });
 
-  const replyToMessage = overrides.replyToMessageId
-    ? {
-        message_id: overrides.replyToMessageId,
-        chat: { id: overrides.chatId ?? 12345, type: overrides.chatType ?? 'private' },
-        date: Math.floor(Date.now() / 1000),
-      }
-    : undefined;
-
   await bot.handleUpdate({
     update_id: 1,
     message: {
@@ -133,11 +140,72 @@ async function dispatchMessage(
         : { id: overrides.chatId ?? 12345, type: overrides.chatType ?? 'private' },
       from: { id: overrides.userId ?? 67890, is_bot: false, first_name: 'Test' },
       date: Math.floor(Date.now() / 1000),
-      reply_to_message: replyToMessage,
     },
   });
 
   return { replies };
+}
+
+interface CallbackResult {
+  toasts: Array<Record<string, unknown>>;
+  edits: Array<Record<string, unknown>>;
+}
+
+async function dispatchCallbackQuery(
+  store: Store,
+  kimiClient: KimiClient,
+  data: string,
+  overrides: {
+    chatId?: number;
+    messageId?: number;
+    messageText?: string;
+    logger?: Logger;
+  } = {}
+): Promise<CallbackResult> {
+  const bot = new Bot('dummy-token');
+  bot.botInfo = { ...TEST_BOT_INFO };
+  bot.on(
+    'callback_query:data',
+    createApprovalCallbackHandler(store, kimiClient, { logger: overrides.logger ?? silentLogger })
+  );
+
+  const result: CallbackResult = { toasts: [], edits: [] };
+  bot.api.config.use((prev, method, payload) => {
+    if (method === 'answerCallbackQuery') {
+      result.toasts.push(payload as Record<string, unknown>);
+      return Promise.resolve({ ok: true, result: true });
+    }
+    if (method === 'editMessageText') {
+      result.edits.push(payload as Record<string, unknown>);
+      return Promise.resolve({ ok: true, result: true });
+    }
+    return prev(method, payload);
+  });
+
+  await bot.handleUpdate({
+    update_id: 1,
+    callback_query: {
+      id: 'cbq-1',
+      from: { id: 67890, is_bot: false, first_name: 'Test' },
+      chat_instance: 'ci-1',
+      message: {
+        message_id: overrides.messageId ?? 50,
+        chat: { id: overrides.chatId ?? 12345, type: 'private' },
+        date: Math.floor(Date.now() / 1000),
+        text: overrides.messageText ?? 'Approval requested: bash — rm -rf build/',
+      },
+      data,
+    },
+  });
+
+  return result;
+}
+
+function activatePairing(store: Store, pairingService: PairingService, sessionId: string, chatId = 12345) {
+  const code = pairingService.generatePairingCode(sessionId);
+  const request = pairingService.validatePairingCode(code);
+  if (!request) throw new Error('failed to validate pairing code');
+  store.activatePairingBySession(sessionId, chatId, 67890);
 }
 
 describe('createStartHandler', () => {
@@ -173,6 +241,36 @@ describe('createStartHandler', () => {
     expect(retry.replies[0]).toBe(
       'Invalid or expired code. Generate a new one from your kimi-code session.'
     );
+  });
+
+  it('calls onPaired with the session id after successful activation', async () => {
+    const onPaired = vi.fn();
+    const code = pairingService.generatePairingCode('session-1');
+    await dispatchStart(pairingService, store, `/start ${code}`, { onPaired });
+
+    expect(onPaired).toHaveBeenCalledTimes(1);
+    expect(onPaired).toHaveBeenCalledWith('session-1');
+  });
+
+  it('does not call onPaired when activation fails', async () => {
+    const onPaired = vi.fn();
+    const throwingStore: Store = {
+      ...store,
+      activatePairingBySession: () => {
+        throw new Error('activation failed');
+      },
+    };
+    const code = pairingService.generatePairingCode('session-1');
+    await dispatchStart(pairingService, throwingStore, `/start ${code}`, { onPaired });
+
+    expect(onPaired).not.toHaveBeenCalled();
+  });
+
+  it('does not call onPaired for invalid codes', async () => {
+    const onPaired = vi.fn();
+    await dispatchStart(pairingService, store, '/start BADCODE', { onPaired });
+
+    expect(onPaired).not.toHaveBeenCalled();
   });
 
   it('start with expired code replies invalid and leaves the store unchanged', async () => {
@@ -266,8 +364,7 @@ describe('createMessageHandler', () => {
   });
 
   it('forwards text messages from paired chats', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
+    activatePairing(store, pairingService, 'session-1');
 
     const kimiClient = createMockKimiClient();
     const { replies } = await dispatchMessage(
@@ -278,8 +375,7 @@ describe('createMessageHandler', () => {
 
     expect(kimiClient.submitPrompt).toHaveBeenCalledWith(
       'session-1',
-      'Hello from Telegram',
-      undefined
+      'Hello from Telegram'
     );
     expect(replies[0]).toBe('Prompt sent.');
   });
@@ -299,8 +395,7 @@ describe('createMessageHandler', () => {
   });
 
   it('ignores empty text messages', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
+    activatePairing(store, pairingService, 'session-1');
 
     const kimiClient = createMockKimiClient();
     const { replies } = await dispatchMessage(
@@ -313,13 +408,12 @@ describe('createMessageHandler', () => {
     expect(replies[0]).toBe('Please send a non-empty message.');
   });
 
-  it('surfaces client errors to the user', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
+  it('surfaces client errors with the envelope code', async () => {
+    activatePairing(store, pairingService, 'session-1');
 
     const kimiClient = createMockKimiClient({
       submitPrompt: vi.fn().mockRejectedValue(
-        new KimiClientError('Unauthorized', 401, 'bad token')
+        new KimiClientError('kimi-code API error 40401: session not found', 40401, 'session not found')
       ),
     });
     const { replies } = await dispatchMessage(
@@ -328,12 +422,11 @@ describe('createMessageHandler', () => {
       'Hello'
     );
 
-    expect(replies[0]).toBe('Failed to send prompt (401). Please try again.');
+    expect(replies[0]).toBe('Failed to send prompt (40401). Please try again.');
   });
 
   it('does not forward messages when pairing is inactive', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
+    activatePairing(store, pairingService, 'session-1');
     store.deactivatePairing(12345);
 
     const kimiClient = createMockKimiClient();
@@ -349,9 +442,8 @@ describe('createMessageHandler', () => {
     );
   });
 
-  it('surfaces non-client errors without a status', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
+  it('surfaces non-client errors without a code', async () => {
+    activatePairing(store, pairingService, 'session-1');
 
     const kimiClient = createMockKimiClient({
       submitPrompt: vi.fn().mockRejectedValue(new Error('network down')),
@@ -366,8 +458,7 @@ describe('createMessageHandler', () => {
   });
 
   it('does nothing when chat id is missing', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
+    activatePairing(store, pairingService, 'session-1');
 
     const kimiClient = createMockKimiClient();
     const { replies } = await dispatchMessage(
@@ -380,84 +471,155 @@ describe('createMessageHandler', () => {
     expect(kimiClient.submitPrompt).not.toHaveBeenCalled();
     expect(replies).toHaveLength(0);
   });
+});
 
-  it('forwards replies with the parent kimi message id', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
-    store.saveThreadMapping({
-      sessionId: 'session-1',
-      telegramChatId: 12345,
-      telegramMessageId: 10,
-      kimiMessageId: 'kimi-10',
-      direction: 'kimi_to_telegram',
-    });
+describe('createApprovalCallbackHandler', () => {
+  let dbPath: string;
+  let store: Store;
+  let pairingService: PairingService;
 
-    const kimiClient = createMockKimiClient();
-    await dispatchMessage(store, kimiClient, 'Reply text', {
-      messageId: 20,
-      replyToMessageId: 10,
-    });
-
-    expect(kimiClient.submitPrompt).toHaveBeenCalledWith(
-      'session-1',
-      'Reply text',
-      'kimi-10'
-    );
+  beforeEach(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimigram-test-'));
+    dbPath = join(dir, 'test.db');
+    store = openStore(dbPath);
+    pairingService = createPairingService(store, { ttlMinutes: 10 });
   });
 
-  it('falls back to top-level prompt when reply has no mapping', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
+  afterEach(() => {
+    store.close();
+    const dir = dbPath.substring(0, dbPath.lastIndexOf('/'));
+    rmSync(dir, { recursive: true, force: true });
+  });
 
+  it('approves on apr callbacks, toasts, and edits the message', async () => {
+    activatePairing(store, pairingService, 'session-1');
     const kimiClient = createMockKimiClient();
-    await dispatchMessage(store, kimiClient, 'Reply text', {
-      messageId: 20,
-      replyToMessageId: 999,
-    });
 
-    expect(kimiClient.submitPrompt).toHaveBeenCalledWith(
+    const { toasts, edits } = await dispatchCallbackQuery(store, kimiClient, 'apr:approval_123');
+
+    expect(kimiClient.resolveApproval).toHaveBeenCalledWith(
       'session-1',
-      'Reply text',
+      'approval_123',
+      'approved',
       undefined
     );
+    expect(toasts[0]).toMatchObject({ text: 'Approved' });
+    expect(edits[0]).toMatchObject({
+      chat_id: 12345,
+      message_id: 50,
+      text: 'Approval requested: bash — rm -rf build/\n\n✅ Approved',
+      reply_markup: { inline_keyboard: [] },
+    });
   });
 
-  it('saves a thread mapping for the forwarded prompt', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
-
+  it('always-allows with session scope on aas callbacks', async () => {
+    activatePairing(store, pairingService, 'session-1');
     const kimiClient = createMockKimiClient();
-    await dispatchMessage(store, kimiClient, 'Hello', { messageId: 30 });
 
-    const mapping = store.getThreadMappingByTelegramMessageId('session-1', 12345, 30);
-    expect(mapping?.kimiMessageId).toBe('prompt-1');
-  });
+    const { toasts, edits } = await dispatchCallbackQuery(store, kimiClient, 'aas:approval_123');
 
-  it('logs mapping save failures but still tells the user the prompt was sent', async () => {
-    const code = pairingService.generatePairingCode('session-1');
-    await dispatchStart(pairingService, store, `/start ${code}`);
-
-    const logger: Logger = {
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    };
-    const throwingStore: Store = {
-      ...store,
-      saveThreadMapping: () => {
-        throw new Error('db locked');
-      },
-    };
-    const kimiClient = createMockKimiClient();
-    const { replies } = await dispatchMessage(
-      throwingStore,
-      kimiClient,
-      'Hello',
-      { messageId: 30, logger }
+    expect(kimiClient.resolveApproval).toHaveBeenCalledWith(
+      'session-1',
+      'approval_123',
+      'approved',
+      'session'
     );
+    expect(toasts[0]).toMatchObject({ text: 'Always allowed for this session' });
+    expect(edits[0]).toMatchObject({
+      text: 'Approval requested: bash — rm -rf build/\n\n✅ Always allowed (session)',
+    });
+  });
 
-    expect(replies[0]).toBe('Prompt sent.');
-    expect(logger.error).toHaveBeenCalled();
+  it('rejects on rej callbacks', async () => {
+    activatePairing(store, pairingService, 'session-1');
+    const kimiClient = createMockKimiClient();
+
+    const { toasts, edits } = await dispatchCallbackQuery(store, kimiClient, 'rej:approval_123');
+
+    expect(kimiClient.resolveApproval).toHaveBeenCalledWith(
+      'session-1',
+      'approval_123',
+      'rejected',
+      undefined
+    );
+    expect(toasts[0]).toMatchObject({ text: 'Rejected' });
+    expect(edits[0]).toMatchObject({
+      text: 'Approval requested: bash — rm -rf build/\n\n❌ Rejected',
+    });
+  });
+
+  it('reports already-resolved approvals', async () => {
+    activatePairing(store, pairingService, 'session-1');
+    const kimiClient = createMockKimiClient({
+      resolveApproval: vi.fn().mockResolvedValue({ kind: 'already_resolved' }),
+    });
+
+    const { toasts, edits } = await dispatchCallbackQuery(store, kimiClient, 'apr:approval_123');
+
+    expect(toasts[0]).toMatchObject({ text: 'Already resolved' });
+    expect(edits[0]).toMatchObject({
+      text: 'Approval requested: bash — rm -rf build/\n\n⚠️ Already resolved',
+    });
+  });
+
+  it('reports approvals that are no longer pending', async () => {
+    activatePairing(store, pairingService, 'session-1');
+    const kimiClient = createMockKimiClient({
+      resolveApproval: vi.fn().mockResolvedValue({ kind: 'not_found' }),
+    });
+
+    const { toasts, edits } = await dispatchCallbackQuery(store, kimiClient, 'apr:approval_123');
+
+    expect(toasts[0]).toMatchObject({ text: 'Approval no longer pending' });
+    expect(edits[0]).toMatchObject({
+      text: 'Approval requested: bash — rm -rf build/\n\n⚠️ Approval no longer pending',
+    });
+  });
+
+  it('answers with a brief reason and does not edit when resolving fails', async () => {
+    activatePairing(store, pairingService, 'session-1');
+    const kimiClient = createMockKimiClient({
+      resolveApproval: vi.fn().mockRejectedValue(
+        new KimiClientError('kimi-code API error 50000: boom', 50000, 'boom')
+      ),
+    });
+
+    const { toasts, edits } = await dispatchCallbackQuery(store, kimiClient, 'apr:approval_123');
+
+    expect(toasts[0]).toMatchObject({ text: 'Failed: boom' });
+    expect(edits).toHaveLength(0);
+  });
+
+  it('ignores callbacks from unpaired chats', async () => {
+    const kimiClient = createMockKimiClient();
+
+    const { toasts, edits } = await dispatchCallbackQuery(store, kimiClient, 'apr:approval_123');
+
+    expect(kimiClient.resolveApproval).not.toHaveBeenCalled();
+    expect(toasts).toHaveLength(0);
+    expect(edits).toHaveLength(0);
+  });
+
+  it('ignores callbacks from chats with an inactive pairing', async () => {
+    activatePairing(store, pairingService, 'session-1');
+    store.deactivatePairing(12345);
+    const kimiClient = createMockKimiClient();
+
+    const { toasts } = await dispatchCallbackQuery(store, kimiClient, 'apr:approval_123');
+
+    expect(kimiClient.resolveApproval).not.toHaveBeenCalled();
+    expect(toasts).toHaveLength(0);
+  });
+
+  it('ignores callback data that is not an approval action', async () => {
+    activatePairing(store, pairingService, 'session-1');
+    const kimiClient = createMockKimiClient();
+
+    const { toasts, edits } = await dispatchCallbackQuery(store, kimiClient, 'something:else');
+
+    expect(kimiClient.resolveApproval).not.toHaveBeenCalled();
+    expect(toasts).toHaveLength(0);
+    expect(edits).toHaveLength(0);
   });
 });
 
@@ -467,17 +629,9 @@ describe('createBot', () => {
     try {
       const pairingService = createPairingService(store, { ttlMinutes: 10 });
       const code = pairingService.generatePairingCode('session-1');
-      const config: Config = {
-        telegramBotToken: 'test-token',
-        databasePath: ':memory:',
-        pairingCodeTtlMinutes: 10,
-        logLevel: 'info',
-        kimiServerUrl: 'http://localhost:58627',
-        kimiBearerToken: 'kimi-token',
-        kimiTokenFile: '~/.kimi-code/token',
-      };
+      const onPaired = vi.fn();
       const kimiClient = createMockKimiClient();
-      const bot = createBot(config, pairingService, store, kimiClient, silentLogger);
+      const bot = createBot(createTestConfig(), pairingService, store, kimiClient, silentLogger, onPaired);
 
       bot.botInfo = { ...TEST_BOT_INFO };
 
@@ -510,6 +664,7 @@ describe('createBot', () => {
         chat_id: 12345,
         text: 'Paired with session `session-1`. You can now send messages here.',
       });
+      expect(onPaired).toHaveBeenCalledWith('session-1');
     } finally {
       store.close();
     }
@@ -520,17 +675,8 @@ describe('createBot', () => {
     try {
       const pairingService = createPairingService(store, { ttlMinutes: 10 });
       const code = pairingService.generatePairingCode('session-1');
-      const config: Config = {
-        telegramBotToken: 'test-token',
-        databasePath: ':memory:',
-        pairingCodeTtlMinutes: 10,
-        logLevel: 'info',
-        kimiServerUrl: 'http://localhost:58627',
-        kimiBearerToken: 'kimi-token',
-        kimiTokenFile: '~/.kimi-code/token',
-      };
       const kimiClient = createMockKimiClient();
-      const bot = createBot(config, pairingService, store, kimiClient, silentLogger);
+      const bot = createBot(createTestConfig(), pairingService, store, kimiClient, silentLogger);
 
       bot.botInfo = { ...TEST_BOT_INFO };
 
@@ -571,8 +717,7 @@ describe('createBot', () => {
 
       expect(kimiClient.submitPrompt).toHaveBeenCalledWith(
         'session-1',
-        'Forwarded message',
-        undefined
+        'Forwarded message'
       );
       expect(sentMessages).toHaveLength(2);
       expect(sentMessages[1]).toMatchObject({
@@ -632,17 +777,8 @@ describe('createUpdateIdDedupMiddleware', () => {
     try {
       const pairingService = createPairingService(store, { ttlMinutes: 10 });
       const code = pairingService.generatePairingCode('session-1');
-      const config: Config = {
-        telegramBotToken: 'test-token',
-        databasePath: ':memory:',
-        pairingCodeTtlMinutes: 10,
-        logLevel: 'info',
-        kimiServerUrl: 'http://localhost:58627',
-        kimiBearerToken: 'kimi-token',
-        kimiTokenFile: '~/.kimi-code/token',
-      };
       const kimiClient = createMockKimiClient();
-      const bot = createBot(config, pairingService, store, kimiClient, silentLogger);
+      const bot = createBot(createTestConfig(), pairingService, store, kimiClient, silentLogger);
 
       bot.botInfo = { ...TEST_BOT_INFO };
 

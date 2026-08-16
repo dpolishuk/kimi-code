@@ -12,16 +12,23 @@
 import { loadConfig } from '../src/config.js';
 import { createLogger } from '../src/logger.js';
 
-interface SessionLike {
-  id?: string;
-  sessionId?: string;
+interface SessionItem {
+  id: string;
+  workspace_id?: string;
+  title?: string;
+  busy?: boolean;
+  pending_interaction?: 'none' | 'approval' | 'question';
   created_at?: string;
   updated_at?: string;
-  status?: string;
-  [key: string]: unknown;
 }
 
-async function fetchSessions(serverUrl: string, token: string): Promise<unknown> {
+interface SessionsEnvelope {
+  code?: number;
+  msg?: string;
+  data?: { items?: unknown; has_more?: boolean };
+}
+
+async function fetchSessions(serverUrl: string, token: string): Promise<SessionItem[]> {
   const response = await fetch(`${serverUrl}/api/v1/sessions`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -33,43 +40,13 @@ async function fetchSessions(serverUrl: string, token: string): Promise<unknown>
     throw new Error(`kimi-code returned ${response.status}: ${await response.text()}`);
   }
 
-  return response.json();
-}
-
-function extractSessions(payload: unknown): SessionLike[] {
-  if (Array.isArray(payload)) return payload as SessionLike[];
-  if (payload && typeof payload === 'object') {
-    const obj = payload as Record<string, unknown>;
-    for (const key of ['sessions', 'data', 'items', 'results']) {
-      const value = obj[key];
-      if (Array.isArray(value)) return value as SessionLike[];
-    }
+  const envelope = (await response.json()) as SessionsEnvelope;
+  if (envelope.code !== 0) {
+    throw new Error(`kimi-code error ${envelope.code}: ${envelope.msg ?? 'unknown'}`);
   }
-  return [];
-}
 
-function getSessionId(session: SessionLike): string | undefined {
-  return session.id ?? session.sessionId;
-}
-
-async function discoverSessionPaths(serverUrl: string, token: string): Promise<void> {
-  try {
-    const response = await fetch(`${serverUrl}/openapi.json`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!response.ok) return;
-
-    const spec = (await response.json()) as { paths?: Record<string, unknown> };
-    const paths = Object.keys(spec.paths ?? {});
-    const sessionPaths = paths.filter((p) => p.includes('session'));
-
-    if (sessionPaths.length > 0) {
-      console.log('Session-related paths found in OpenAPI spec:');
-      sessionPaths.forEach((p) => console.log(`  ${p}`));
-    }
-  } catch {
-    // Ignore discovery errors.
-  }
+  const items = envelope.data?.items;
+  return Array.isArray(items) ? (items as SessionItem[]) : [];
 }
 
 async function main() {
@@ -77,8 +54,7 @@ async function main() {
   const logger = createLogger(config);
 
   try {
-    const payload = await fetchSessions(config.kimiServerUrl, config.kimiBearerToken);
-    const sessions = extractSessions(payload);
+    const sessions = await fetchSessions(config.kimiServerUrl, config.kimiBearerToken);
 
     if (sessions.length === 0) {
       console.log('No sessions returned by kimi-code.');
@@ -87,12 +63,13 @@ async function main() {
 
     console.log('Active kimi-code sessions:');
     for (const session of sessions) {
-      const id = getSessionId(session);
-      if (!id) continue;
-
-      const status = session.status ?? 'unknown';
-      const created = session.created_at ?? '';
-      const line = [`- ${id}`, status && `status=${status}`, created && `created=${created}`]
+      const line = [
+        `- ${session.id}`,
+        session.title && `title=${JSON.stringify(session.title)}`,
+        `busy=${session.busy ?? false}`,
+        `pending_interaction=${session.pending_interaction ?? 'none'}`,
+        session.created_at && `created=${session.created_at}`,
+      ]
         .filter(Boolean)
         .join(' ');
       console.log(line);
@@ -104,7 +81,6 @@ async function main() {
     logger.error({ error }, 'Failed to list sessions from kimi-code');
     console.error('\nCould not fetch sessions. Make sure kimi-code is running and the bearer token is valid.');
     console.error(`Tried: GET ${config.kimiServerUrl}/api/v1/sessions`);
-    await discoverSessionPaths(config.kimiServerUrl, config.kimiBearerToken);
     process.exit(1);
   }
 }

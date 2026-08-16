@@ -40,12 +40,7 @@ const configSchema = z
       .default('http://127.0.0.1:58627')
       .transform((url) => url.replace(/\/$/, '')),
     kimiBearerToken: z.string().optional(),
-    kimiTokenFile: z.string().default('~/.kimi-code/token'),
-    kimiWsAuthMode: z
-      .enum(['subprotocol', 'query'], {
-        message: 'KIMI_WS_AUTH_MODE must be either "subprotocol" or "query"',
-      })
-      .default('subprotocol'),
+    kimiTokenFile: z.string().default('~/.kimi-code/server.token'),
   })
   .transform((cfg) => {
     const kimiWsUrl = cfg.kimiServerUrl
@@ -82,6 +77,5 @@ export function loadConfig(): Config {
     kimiServerUrl: process.env.KIMI_SERVER_URL,
     kimiBearerToken: process.env.KIMI_BEARER_TOKEN,
     kimiTokenFile: process.env.KIMI_TOKEN_FILE,
-    kimiWsAuthMode: process.env.KIMI_WS_AUTH_MODE,
   });
 }

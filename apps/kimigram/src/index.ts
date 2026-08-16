@@ -24,11 +24,12 @@ async function main() {
   const store = openStore(config.databasePath);
   const pairingService = createPairingService(store, { ttlMinutes: config.pairingCodeTtlMinutes });
   const kimiClient = createKimiClient(config);
-  const bot = createBot(config, pairingService, store, kimiClient, logger);
+  const bot = createBot(config, pairingService, store, kimiClient, logger, (sessionId) => {
+    eventClient.setSessionIds([sessionId]);
+  });
   const eventDispatcher = createEventDispatcher(store, bot.api, { logger });
   const eventClient = createKimiEventClient(config, {
     onEvent: eventDispatcher,
-    authMode: config.kimiWsAuthMode,
     logger,
   });
 

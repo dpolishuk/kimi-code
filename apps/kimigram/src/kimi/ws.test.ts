@@ -14,7 +14,7 @@ function createTestConfig(overrides: Partial<Config> = {}): Config {
     logLevel: 'info',
     kimiServerUrl: 'http://localhost:58627',
     kimiBearerToken: 'kimi-token',
-    kimiTokenFile: '~/.kimi-code/token',
+    kimiTokenFile: '~/.kimi-code/server.token',
     kimiWsUrl: 'ws://localhost:58627',
     ...overrides,
   };
@@ -62,7 +62,11 @@ class FakeWebSocket extends EventTarget implements WebSocketLike {
     this.dispatchEvent(new CloseEvent('close', { wasClean: true }));
   }
 
-  // Helper to simulate server-side events
+  sentFrames(): Array<Record<string, unknown>> {
+    return this.sent.map((frame) => JSON.parse(frame) as Record<string, unknown>);
+  }
+
+  // Helpers to simulate server-side events
   simulateOpen() {
     this.readyState = 1;
     this.dispatchEvent(new Event('open'));
@@ -70,6 +74,14 @@ class FakeWebSocket extends EventTarget implements WebSocketLike {
 
   simulateMessage(data: string) {
     this.dispatchEvent(new MessageEvent('message', { data }));
+  }
+
+  simulateFrame(frame: Record<string, unknown>) {
+    this.simulateMessage(JSON.stringify(frame));
+  }
+
+  simulateServerHello() {
+    this.simulateFrame({ type: 'server_hello', payload: {} });
   }
 
   simulateError(message: string) {
@@ -107,52 +119,181 @@ describe('createKimiEventClient', () => {
     });
   }
 
-  it('connects to the WebSocket URL with bearer subprotocol', () => {
+  function lastSocket(): FakeWebSocket {
+    const socket = FakeWebSocket.lastInstance;
+    if (!socket) throw new Error('no socket');
+    return socket;
+  }
+
+  it('connects to the WebSocket URL with the kimi-code bearer subprotocol', () => {
     const client = createClient();
     client.start();
 
-    const socket = FakeWebSocket.lastInstance;
-    expect(socket).not.toBeNull();
-    expect(socket?.url).toBe('ws://localhost:58627/api/v1/ws');
-    expect(socket?.protocols).toEqual(['bearer.kimi-token']);
+    const socket = lastSocket();
+    expect(socket.url).toBe('ws://localhost:58627/api/v1/ws');
+    expect(socket.protocols).toEqual(['kimi-code.bearer.kimi-token']);
   });
 
-  it('can authenticate via query parameter', () => {
-    const client = createClient(
-      createTestConfig({
-        kimiServerUrl: 'http://localhost:58627',
-        kimiWsUrl: 'ws://localhost:58627',
-      }),
-      {
-        authMode: 'query',
-      }
-    );
-    client.start();
-
-    const socket = FakeWebSocket.lastInstance;
-    expect(socket?.url).toBe(
-      'ws://localhost:58627/api/v1/ws?token=kimi-token'
-    );
-    expect(socket?.protocols).toBeUndefined();
-  });
-
-  it('delivers parsed events to the handler', () => {
+  it('runs the handshake after server_hello: client_hello then subscribe', () => {
     const client = createClient();
     client.start();
 
-    const socket = FakeWebSocket.lastInstance!;
+    const socket = lastSocket();
     socket.simulateOpen();
-    socket.simulateMessage(JSON.stringify({ type: 'turn.ended', payload: {} }));
+    socket.simulateServerHello();
+
+    const frames = socket.sentFrames();
+    expect(frames).toHaveLength(2);
+    expect(frames[0]).toMatchObject({
+      type: 'client_hello',
+      payload: { client_id: 'kimigram' },
+    });
+    expect(typeof frames[0].id).toBe('string');
+    expect(frames[1]).toMatchObject({
+      type: 'subscribe',
+      payload: { session_ids: [] },
+    });
+  });
+
+  it('subscribes with the session ids set before connecting', () => {
+    const client = createClient();
+    client.setSessionIds(['session-1']);
+    client.start();
+
+    const socket = lastSocket();
+    socket.simulateOpen();
+    socket.simulateServerHello();
+
+    const frames = socket.sentFrames();
+    expect(frames[1]).toMatchObject({
+      type: 'subscribe',
+      payload: { session_ids: ['session-1'] },
+    });
+  });
+
+  it('sends a new subscribe frame when setSessionIds is called while connected', () => {
+    const client = createClient();
+    client.start();
+
+    const socket = lastSocket();
+    socket.simulateOpen();
+    socket.simulateServerHello();
+
+    client.setSessionIds(['session-1', 'session-2']);
+
+    const frames = socket.sentFrames();
+    expect(frames).toHaveLength(3);
+    expect(frames[2]).toMatchObject({
+      type: 'subscribe',
+      payload: { session_ids: ['session-1', 'session-2'] },
+    });
+  });
+
+  it('does not send anything when setSessionIds is called before connect', () => {
+    const client = createClient();
+    client.setSessionIds(['session-1']);
+    expect(FakeWebSocket.lastInstance).toBeNull();
+  });
+
+  it('re-runs the handshake with the current session set after reconnect', () => {
+    const client = createClient();
+    client.start();
+
+    const firstSocket = lastSocket();
+    firstSocket.simulateOpen();
+    firstSocket.simulateServerHello();
+    client.setSessionIds(['session-1']);
+    firstSocket.simulateClose();
+
+    vi.advanceTimersByTime(1_000);
+
+    const secondSocket = lastSocket();
+    expect(secondSocket).not.toBe(firstSocket);
+    secondSocket.simulateOpen();
+    secondSocket.simulateServerHello();
+
+    const frames = secondSocket.sentFrames();
+    expect(frames[0]).toMatchObject({ type: 'client_hello' });
+    expect(frames[1]).toMatchObject({
+      type: 'subscribe',
+      payload: { session_ids: ['session-1'] },
+    });
+  });
+
+  it('replies to ping frames with a pong carrying the same nonce', () => {
+    const client = createClient();
+    client.start();
+
+    const socket = lastSocket();
+    socket.simulateOpen();
+    socket.simulateServerHello();
+    socket.simulateFrame({
+      type: 'ping',
+      timestamp: '2026-01-01T00:00:00Z',
+      payload: { nonce: 'nonce-123' },
+    });
+
+    const frames = socket.sentFrames();
+    expect(frames.at(-1)).toEqual({
+      type: 'pong',
+      payload: { nonce: 'nonce-123' },
+    });
+  });
+
+  it('does not deliver control frames as events', () => {
+    const client = createClient();
+    client.start();
+
+    const socket = lastSocket();
+    socket.simulateOpen();
+    socket.simulateServerHello();
+    socket.simulateFrame({ type: 'ack', id: 'x' });
+    socket.simulateFrame({ type: 'ping', payload: { nonce: 'n' } });
+
+    expect(events).toHaveLength(0);
+  });
+
+  it('delivers parsed event frames with sessionId and payload', () => {
+    const client = createClient();
+    client.start();
+
+    const socket = lastSocket();
+    socket.simulateOpen();
+    socket.simulateServerHello();
+    socket.simulateFrame({
+      type: 'turn.ended',
+      seq: 42,
+      session_id: 'session-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      payload: { turnId: 'turn-1', reason: 'completed' },
+    });
 
     expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({ type: 'turn.ended', payload: {} });
+    expect(events[0]).toEqual({
+      type: 'turn.ended',
+      sessionId: 'session-1',
+      payload: { turnId: 'turn-1', reason: 'completed' },
+    });
+  });
+
+  it('delivers frames without a session_id with an undefined sessionId', () => {
+    const client = createClient();
+    client.start();
+
+    const socket = lastSocket();
+    socket.simulateOpen();
+    socket.simulateFrame({ type: 'server.status', payload: { ok: true } });
+
+    expect(events).toEqual([
+      { type: 'server.status', sessionId: undefined, payload: { ok: true } },
+    ]);
   });
 
   it('ignores malformed JSON messages', () => {
     const client = createClient();
     client.start();
 
-    const socket = FakeWebSocket.lastInstance!;
+    const socket = lastSocket();
     socket.simulateOpen();
     socket.simulateMessage('not-json');
 
@@ -163,7 +304,7 @@ describe('createKimiEventClient', () => {
     const client = createClient();
     client.start();
 
-    const socket = FakeWebSocket.lastInstance!;
+    const socket = lastSocket();
     socket.simulateOpen();
     socket.simulateMessage(JSON.stringify({ payload: {} }));
 
@@ -174,15 +315,15 @@ describe('createKimiEventClient', () => {
     const client = createClient();
     client.start();
 
-    const firstSocket = FakeWebSocket.lastInstance!;
+    const firstSocket = lastSocket();
     firstSocket.simulateOpen();
     firstSocket.simulateClose();
 
-    expect(FakeWebSocket.lastInstance).toBe(firstSocket);
+    expect(lastSocket()).toBe(firstSocket);
 
     vi.advanceTimersByTime(1_000);
 
-    const secondSocket = FakeWebSocket.lastInstance!;
+    const secondSocket = lastSocket();
     expect(secondSocket).not.toBe(firstSocket);
     expect(secondSocket.url).toBe('ws://localhost:58627/api/v1/ws');
   });
@@ -194,7 +335,7 @@ describe('createKimiEventClient', () => {
     client.start();
 
     for (let i = 0; i < 3; i++) {
-      FakeWebSocket.lastInstance!.simulateClose();
+      lastSocket().simulateClose();
       const timeoutCalls = spy.mock.calls
         .slice(timeouts.length)
         .map((call) => Number(call[1]));
@@ -212,7 +353,7 @@ describe('createKimiEventClient', () => {
     client.start();
 
     for (let i = 0; i < 6; i++) {
-      FakeWebSocket.lastInstance!.simulateClose();
+      lastSocket().simulateClose();
       const timeoutCalls = spy.mock.calls
         .slice(timeouts.length)
         .map((call) => Number(call[1]));
@@ -229,14 +370,14 @@ describe('createKimiEventClient', () => {
     const client = createClient();
     client.start();
 
-    const firstSocket = FakeWebSocket.lastInstance!;
+    const firstSocket = lastSocket();
     firstSocket.simulateOpen();
     client.stop();
 
     firstSocket.simulateClose();
     vi.advanceTimersByTime(60_000);
 
-    expect(FakeWebSocket.lastInstance).toBe(firstSocket);
+    expect(lastSocket()).toBe(firstSocket);
     expect(firstSocket.closed).toBe(true);
   });
 
@@ -244,14 +385,14 @@ describe('createKimiEventClient', () => {
     const client = createClient();
     client.start();
 
-    const firstSocket = FakeWebSocket.lastInstance!;
+    const firstSocket = lastSocket();
     firstSocket.simulateOpen();
     firstSocket.simulateClose();
 
     client.stop();
     vi.advanceTimersByTime(60_000);
 
-    expect(FakeWebSocket.lastInstance).toBe(firstSocket);
+    expect(lastSocket()).toBe(firstSocket);
     expect(firstSocket.closed).toBe(true);
   });
 
@@ -264,7 +405,7 @@ describe('createKimiEventClient', () => {
     const client = createClient(createTestConfig(), { logger });
     client.start();
 
-    const socket = FakeWebSocket.lastInstance!;
+    const socket = lastSocket();
     socket.simulateOpen();
     socket.simulateError('connection failed');
 
@@ -277,28 +418,13 @@ describe('createKimiEventClient', () => {
     );
   });
 
-  it('encodes the token in query auth mode', () => {
-    const client = createClient(
-      createTestConfig({
-        kimiBearerToken: 'token with spaces & symbols=/?',
-      }),
-      { authMode: 'query' }
-    );
-    client.start();
-
-    const socket = FakeWebSocket.lastInstance;
-    expect(socket?.url).toBe(
-      'ws://localhost:58627/api/v1/ws?token=token%20with%20spaces%20%26%20symbols%3D%2F%3F'
-    );
-  });
-
   it('is idempotent when start is called multiple times', () => {
     const client = createClient();
     client.start();
-    const firstSocket = FakeWebSocket.lastInstance!;
+    const firstSocket = lastSocket();
 
     client.start();
-    const secondSocket = FakeWebSocket.lastInstance!;
+    const secondSocket = lastSocket();
 
     expect(secondSocket).toBe(firstSocket);
   });
@@ -350,9 +476,9 @@ describe('createKimiEventClient', () => {
     });
     client.start();
 
-    const socket = FakeWebSocket.lastInstance!;
+    const socket = lastSocket();
     socket.simulateOpen();
-    socket.simulateMessage(JSON.stringify({ type: 'turn.ended', payload: {} }));
+    socket.simulateFrame({ type: 'turn.ended', payload: {} });
 
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'turn.ended', error: expect.any(Error) }),
