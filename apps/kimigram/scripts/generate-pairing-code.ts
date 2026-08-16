@@ -4,7 +4,7 @@
  * CLI helper to generate a one-time Telegram pairing code for a kimi-code session.
  *
  * Usage:
- *   npm run pair -- <session-id>
+ *   pnpm --filter kimigram run pair -- <session-id>
  *   npx tsx scripts/generate-pairing-code.ts <session-id>
  */
 
@@ -16,7 +16,7 @@ import { createPairingService } from '../src/pairing.js';
 function main() {
   const sessionId = process.argv[2];
   if (!sessionId || sessionId.trim().length === 0) {
-    console.error('Usage: npm run pair -- <session-id>');
+    console.error('Usage: pnpm --filter kimigram run pair -- <session-id>');
     process.exit(1);
   }
 

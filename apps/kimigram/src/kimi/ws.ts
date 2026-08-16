@@ -97,7 +97,7 @@ export function createKimiEventClient(
     });
 
     currentSocket.on('message', (raw) => {
-      const data = typeof raw === 'string' ? raw : String(raw ?? '');
+      const data = typeof raw === 'string' ? raw : (raw as Buffer).toString('utf8');
       try {
         const parsed = JSON.parse(data) as unknown;
         if (

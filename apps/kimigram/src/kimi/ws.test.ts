@@ -221,7 +221,7 @@ describe('createKimiEventClient', () => {
     }
 
     expect(Math.max(...timeouts)).toBe(30_000);
-    const lastTimeout = timeouts[timeouts.length - 1];
+    const lastTimeout = timeouts.at(-1);
     expect(lastTimeout).toBe(30_000);
   });
 

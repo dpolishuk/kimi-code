@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { homedir } from 'os';
-import { join } from 'path';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { loadConfig } from './config.js';
 
 describe('loadConfig', () => {

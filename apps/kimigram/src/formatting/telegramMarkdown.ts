@@ -37,7 +37,7 @@ export function convertToTelegramMarkdown(
   }
 
   try {
-    let text = parseBlocks(input.replace(/\r\n/g, '\n'));
+    let text = parseBlocks(input.replaceAll(/\r\n/g, '\n'));
     if (text.length > TELEGRAM_MAX_MESSAGE_LENGTH) {
       // Truncating MarkdownV2 can leave unclosed entities. Fall back to a
       // truncated plain-text version of the original input so Telegram never
@@ -282,7 +282,7 @@ function escapeChar(ch: string): string {
 }
 
 function escapeCode(content: string): string {
-  return content.replace(/([\\`])/g, '\\$1');
+  return content.replaceAll(/([\\`])/g, '\\$1');
 }
 
 function prepareUrl(url: string): string {
@@ -290,11 +290,11 @@ function prepareUrl(url: string): string {
   // non-word character), then apply Telegram escaping for the characters that
   // would break the link syntax.
   return url
-    .replace(/\\(\W)/g, '$1')
-    .replace(/\\/g, '\\\\')
-    .replace(/\)/g, '\\)')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]');
+    .replaceAll(/\\(\W)/g, '$1')
+    .replaceAll(/\\/g, '\\\\')
+    .replaceAll(/\)/g, '\\)')
+    .replaceAll(/\[/g, '\\[')
+    .replaceAll(/\]/g, '\\]');
 }
 
 function findUnescaped(input: string, start: number, delim: string): number {

@@ -54,7 +54,7 @@ export function createEventDispatcher(
     }
 
     const pairing = store.getPairingBySessionId(sessionId);
-    if (!pairing?.active || pairing.telegramChatId == null) {
+    if (!pairing?.active || pairing.telegramChatId === null) {
       return;
     }
 

@@ -1,6 +1,7 @@
 {
   "name": "kimigram",
   "version": "1.0.0",
+  "private": true,
   "description": "",
   "main": "dist/index.js",
   "scripts": {
@@ -18,19 +19,20 @@
   "license": "ISC",
   "type": "module",
   "devDependencies": {
+    "@grammyjs/types": "^4.0.0",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^26.1.0",
-    "@types/ws": "^8.18.1",
-    "tsx": "^4.23.0",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.9"
+    "@types/node": "^22.15.3",
+    "@types/ws": "^8.18.0",
+    "tsx": "^4.21.0",
+    "typescript": "6.0.2",
+    "vitest": "4.1.4"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
     "dotenv": "^17.4.2",
     "grammy": "^1.44.0",
-    "pino": "^10.3.1",
-    "ws": "^8.21.0",
-    "zod": "^4.4.3"
+    "pino": "^9.5.0",
+    "ws": "^8.18.0",
+    "zod": "catalog:"
   }
 }

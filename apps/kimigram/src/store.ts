@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
-import { mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 /**
@@ -83,15 +83,19 @@ CREATE INDEX IF NOT EXISTS idx_thread_mappings_telegram ON thread_mappings(sessi
 CREATE INDEX IF NOT EXISTS idx_thread_mappings_kimi ON thread_mappings(session_id, telegram_chat_id, kimi_message_id);
 `;
 
+function isNullish(value: unknown): value is null | undefined {
+  return value === null || value === undefined;
+}
+
 function toPairing(row: Record<string, unknown>): Pairing {
   return {
     id: String(row.id),
     sessionId: String(row.session_id),
-    telegramChatId: row.telegram_chat_id == null ? null : Number(row.telegram_chat_id),
-    telegramUserId: row.telegram_user_id == null ? null : Number(row.telegram_user_id),
-    pairingCode: row.pairing_code == null ? null : String(row.pairing_code),
-    codeExpiresAt: row.code_expires_at == null ? null : new Date(String(row.code_expires_at)),
-    pairedAt: row.paired_at == null ? null : new Date(String(row.paired_at)),
+    telegramChatId: isNullish(row.telegram_chat_id) ? null : Number(row.telegram_chat_id),
+    telegramUserId: isNullish(row.telegram_user_id) ? null : Number(row.telegram_user_id),
+    pairingCode: isNullish(row.pairing_code) ? null : (row.pairing_code as string),
+    codeExpiresAt: isNullish(row.code_expires_at) ? null : new Date(row.code_expires_at as string),
+    pairedAt: isNullish(row.paired_at) ? null : new Date(row.paired_at as string),
     active: Boolean(row.active),
   };
 }
@@ -112,7 +116,7 @@ function toPendingRequest(row: Record<string, unknown>): PendingPairingRequest {
   return {
     id: String(row.id),
     sessionId: String(row.session_id),
-    pairingCode: row.pairing_code == null ? null : String(row.pairing_code),
+    pairingCode: isNullish(row.pairing_code) ? null : (row.pairing_code as string),
     codeExpiresAt: new Date(String(row.code_expires_at)),
     active: false,
   };
@@ -244,10 +248,10 @@ export function openStore(databasePath: string): Store {
       if (!mapping.kimiMessageId?.trim()) {
         throw new Error('kimiMessageId is required to save a thread mapping');
       }
-      if (mapping.telegramChatId == null || mapping.telegramChatId <= 0) {
+      if (isNullish(mapping.telegramChatId) || mapping.telegramChatId <= 0) {
         throw new Error('telegramChatId must be a positive integer');
       }
-      if (mapping.telegramMessageId == null || mapping.telegramMessageId <= 0) {
+      if (isNullish(mapping.telegramMessageId) || mapping.telegramMessageId <= 0) {
         throw new Error('telegramMessageId must be a positive integer');
       }
 

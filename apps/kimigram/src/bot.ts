@@ -25,7 +25,7 @@ export function createStartHandler(pairingService: PairingService, store: Store)
 
     if (!code) {
       await ctx.reply(
-        'Generate a pairing code from your kimi-code session (e.g. `/telegram pair`), ' +
+        'Generate a pairing code for your kimi-code session (`pnpm --filter kimigram run pair -- <session-id>`), ' +
           'then send it here as:\n' +
           '`/start <code>`'
       );
@@ -68,7 +68,7 @@ export function createUpdateIdDedupMiddleware(windowSize = DEFAULT_UPDATE_ID_WIN
 
   return async (ctx: Context, next: () => Promise<void>): Promise<void> => {
     const id = ctx.update.update_id;
-    if (id == null) {
+    if (typeof id !== 'number') {
       await next();
       return;
     }
@@ -81,7 +81,7 @@ export function createUpdateIdDedupMiddleware(windowSize = DEFAULT_UPDATE_ID_WIN
     order.push(id);
     if (order.length > windowSize) {
       const oldest = order.shift();
-      if (oldest != null) {
+      if (oldest !== undefined) {
         seen.delete(oldest);
       }
     }
@@ -119,7 +119,7 @@ export function createMessageHandler(
 
     const replyToTelegramMessageId = ctx.message?.reply_to_message?.message_id;
     let replyToKimiMessageId: string | undefined;
-    if (replyToTelegramMessageId != null) {
+    if (replyToTelegramMessageId !== undefined) {
       const mapping = store.getThreadMappingByTelegramMessageId(
         pairing.sessionId,
         chatId,
@@ -145,7 +145,7 @@ export function createMessageHandler(
     }
 
     const telegramMessageId = ctx.message?.message_id;
-    if (telegramMessageId != null) {
+    if (telegramMessageId !== undefined) {
       try {
         store.saveThreadMapping({
           sessionId: pairing.sessionId,

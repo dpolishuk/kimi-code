@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Bot } from 'grammy';
 import { openStore, type Store } from './store.js';
 import { createPairingService, type PairingService } from './pairing.js';
@@ -191,7 +191,7 @@ describe('createStartHandler', () => {
     const { replies } = await dispatchStart(pairingService, store, '/start');
 
     expect(replies[0]).toBe(
-      'Generate a pairing code from your kimi-code session (e.g. `/telegram pair`), ' +
+      'Generate a pairing code for your kimi-code session (`pnpm --filter kimigram run pair -- <session-id>`), ' +
         'then send it here as:\n' +
         '`/start <code>`'
     );
@@ -211,7 +211,7 @@ describe('createStartHandler', () => {
     const { replies } = await dispatchStart(pairingService, store, '/start   ');
 
     expect(replies[0]).toBe(
-      'Generate a pairing code from your kimi-code session (e.g. `/telegram pair`), ' +
+      'Generate a pairing code for your kimi-code session (`pnpm --filter kimigram run pair -- <session-id>`), ' +
         'then send it here as:\n' +
         '`/start <code>`'
     );

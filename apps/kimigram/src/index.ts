@@ -57,8 +57,8 @@ async function main() {
     process.exit(0);
   };
 
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
+  process.once('SIGINT', () => void stop());
+  process.once('SIGTERM', () => void stop());
 
   eventClient.start();
   await bot.start();

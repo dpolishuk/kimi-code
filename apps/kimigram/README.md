@@ -23,13 +23,13 @@ A Telegram bridge sidecar for [kimi-code](https://github.com/MoonshotAI/kimi-cod
    - `TELEGRAM_BOT_TOKEN` — required.
    - Either `KIMI_BEARER_TOKEN` or `KIMI_TOKEN_FILE` pointing to a file containing your kimi-code bearer token.
    - `KIMI_WS_AUTH_MODE` — `subprotocol` (default) or `query`. Prefer `subprotocol`; `query` places the bearer token in the URL and may expose it to proxies or server logs.
-4. Install dependencies:
+4. Install dependencies from the repository root (kimigram is a pnpm workspace member):
    ```bash
-   npm install
+   pnpm install
    ```
 5. Start the sidecar:
    ```bash
-   npm run dev
+   pnpm --filter kimigram dev
    ```
 
 The sidecar creates a SQLite database at `DATABASE_PATH` (default `./data/kimigram.db`) to store pairings and message-thread mappings.
@@ -43,13 +43,13 @@ A Telegram chat must be paired with a kimi-code session before the bot will forw
 Find your active kimi-code session ID:
 
 ```bash
-npm run sessions
+pnpm --filter kimigram run sessions
 ```
 
 Then generate a pairing code for that session:
 
 ```bash
-npm run pair -- <session-id>
+pnpm --filter kimigram run pair -- <session-id>
 ```
 
 Then send the printed code to the bot in a private chat:
@@ -100,10 +100,10 @@ To link the chat to a different session, generate a new pairing code from the ne
 ## Development
 
 ```bash
-npm run dev      # Start with tsx
-npm run build    # TypeScript compile
-npm test         # Run tests
-npm run lint     # Type check
+pnpm --filter kimigram dev      # Start with tsx
+pnpm --filter kimigram build    # TypeScript compile
+pnpm --filter kimigram test     # Run tests
+pnpm --filter kimigram run lint # Type check
 ```
 
 ## Architecture
@@ -116,6 +116,5 @@ npm run lint     # Type check
 - `src/kimi/client.ts` — REST client for the running kimi-code server.
 - `src/kimi/ws.ts` — WebSocket client for the kimi-code event stream.
 - `src/kimi/events.ts` — Dispatcher that maps kimi-code events to Telegram notifications.
-- `src/threads.ts` — Maps Telegram `message_id` ↔ kimi-code `user_message_id` for reply threading.
 - `src/formatting/telegramMarkdown.ts` — Converts kimi-code Markdown to Telegram MarkdownV2 with plain-text fallback.
 - `src/index.ts` — Service entrypoint.

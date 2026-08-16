@@ -2,10 +2,10 @@
 
 /**
  * CLI helper to list active kimi-code sessions so the user can pick an ID
- * for `npm run pair -- <session-id>`.
+ * for `pnpm --filter kimigram run pair -- <session-id>`.
  *
  * Usage:
- *   npm run sessions
+ *   pnpm --filter kimigram run sessions
  *   npx tsx scripts/list-sessions.ts
  */
 
@@ -99,7 +99,7 @@ async function main() {
     }
 
     console.log('\nPair a session with Telegram:');
-    console.log('  npm run pair -- <session-id>');
+    console.log('  pnpm --filter kimigram run pair -- <session-id>');
   } catch (error) {
     logger.error({ error }, 'Failed to list sessions from kimi-code');
     console.error('\nCould not fetch sessions. Make sure kimi-code is running and the bearer token is valid.');

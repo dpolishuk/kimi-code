@@ -205,11 +205,11 @@ describe('createKimiClient', () => {
 
   it('serializes special characters in request body', async () => {
     const client = createKimiClient(createTestConfig());
-    await client.submitPrompt('session-1', 'line1\nline2 "quote" \u00e9');
+    await client.submitPrompt('session-1', 'line1\nline2 "quote" \u00E9');
 
     const [, init] = fetchSpy.mock.calls[0];
     expect(JSON.parse(String(init?.body))).toEqual({
-      text: 'line1\nline2 "quote" \u00e9',
+      text: 'line1\nline2 "quote" \u00E9',
     });
   });
 

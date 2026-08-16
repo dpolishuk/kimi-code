@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { readFileSync } from 'fs';
-import { homedir } from 'os';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 /**
  * Environment configuration for the kimigram sidecar.
@@ -19,7 +19,7 @@ const configSchema = z
         if (val === undefined || val === '') return undefined;
         const parsed = Number(val);
         if (Number.isNaN(parsed) || !Number.isInteger(parsed)) {
-          throw new Error('PAIRING_CODE_TTL_MINUTES must be a positive integer');
+          throw new TypeError('PAIRING_CODE_TTL_MINUTES must be a positive integer');
         }
         return parsed;
       },
@@ -60,7 +60,7 @@ const configSchema = z
       } catch (error) {
         const cause = error instanceof Error ? error.message : String(error);
         throw new Error(
-          `KIMI bearer token is required. Set KIMI_BEARER_TOKEN or ensure ${cfg.kimiTokenFile} exists. ${cause}`
+          `KIMI bearer token is required. Set KIMI_BEARER_TOKEN or ensure ${cfg.kimiTokenFile} exists. ${cause}`, { cause: error }
         );
       }
     }
